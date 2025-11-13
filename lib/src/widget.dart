@@ -157,7 +157,7 @@ class CustomInteractiveViewerState extends State<CustomInteractiveViewer>
   /// Center the content if a content size is provided
   void _centerContentIfNeeded() {
     if (widget.contentSize != null) {
-      centerContent();
+      centerContent(animate: false);
     }
   }
 
