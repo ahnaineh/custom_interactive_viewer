@@ -372,4 +372,9 @@ class GestureHandler {
         return delta;
     }
   }
+
+  /// Disposes the gesture handler and cleans up resources
+  void dispose() {
+    _stopFling();
+  }
 }
