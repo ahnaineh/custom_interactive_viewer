@@ -314,8 +314,8 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     onEvent?.call(ViewerEvent.animationStart);
     notifyListeners();
 
-    // Dispose any previous animation controller
-    _animationController?.dispose();
+    // Stop and dispose any previous animation controller
+    _stopAnimation();
     _animationController = AnimationController(
       vsync: _vsync!,
       duration: duration,
@@ -566,9 +566,32 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     _getContentSize = getter;
   }
 
+  /// Stops any active animation without disposing the controller
+  void _stopAnimation() {
+    if (_animationController != null) {
+      if (_animationController!.isAnimating) {
+        _animationController!.stop();
+      }
+      _animationController!.dispose();
+      _animationController = null;
+      _transformationAnimation = null;
+      _isAnimating = false;
+    }
+  }
+
+  /// Stops any active animation. Can be called externally to cancel animations.
+  void stopAnimation() {
+    if (_isAnimating) {
+      _stopAnimation();
+      onEvent?.call(ViewerEvent.animationEnd);
+      notifyListeners();
+    }
+  }
+
   @override
   void dispose() {
-    _animationController?.dispose();
+    // Stop and dispose any active animations before disposing the controller
+    _stopAnimation();
     super.dispose();
   }
 }

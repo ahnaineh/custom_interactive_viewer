@@ -184,18 +184,28 @@ class CustomInteractiveViewerState extends State<CustomInteractiveViewer>
 
   @override
   void dispose() {
+    // Stop any active animations before disposing to prevent ticker assertion errors
+    controller.stopAnimation();
+
+    // Remove listeners before disposing resources
     controller.removeListener(_onControllerUpdate);
+    HardwareKeyboard.instance.removeHandler(_handleHardwareKeyChange);
+
+    // Dispose handlers
+    _gestureHandler.dispose();
+    _keyboardHandler.dispose();
+
+    // Dispose focus node if it was created internally
     if (widget.focusNode == null) {
       _focusNode.dispose();
     }
+
+    // Dispose controller if it was created internally
     if (widget.controller == null) {
       controller.dispose();
     }
-    _keyboardHandler.dispose();
 
-    HardwareKeyboard.instance.removeHandler(_handleHardwareKeyChange);
-    // Remove key listener
-
+    // Call super.dispose() last, after all cleanup
     super.dispose();
   }
 
