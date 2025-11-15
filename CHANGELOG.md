@@ -1,3 +1,10 @@
+## 0.0.8 - 2025-11-15
+
+### Fixed
+ - Auto center content on initiaization without animation
+ - fix controller disposal issues
+
+
 ## 0.0.7 - 2025-07-19
 
 ### Fixed
