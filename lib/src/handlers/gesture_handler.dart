@@ -328,8 +328,20 @@ class GestureHandler {
     // This matches browser behavior: scroll up = zoom in, scroll down = zoom out
     final double zoomFactor = event.scrollDelta.dy > 0 ? -0.1 : 0.1;
 
+    final double currentScale = controller.scale;
+    // Compute the newScale clamped to min/max
+    final double newScale = (currentScale * (1 + zoomFactor)).clamp(
+      minScale,
+      maxScale,
+    );
+    // Convert clamped scale back to an effective factor to pass to controller.zoom
+    final double effectiveFactor = (newScale / currentScale) - 1.0;
+
+    // If no visible change, skip
+    if (effectiveFactor.abs() < 1e-4) return;
+
     controller.zoom(
-      factor: zoomFactor,
+      factor: effectiveFactor,
       focalPoint: localPosition,
       animate: false,
     );
