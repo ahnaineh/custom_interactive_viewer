@@ -338,7 +338,7 @@ class GestureHandler {
     final double effectiveFactor = (newScale / currentScale) - 1.0;
 
     // If no visible change, skip
-    if (effectiveFactor.abs() < 10e-4) return;
+    if (effectiveFactor.abs() < 1e-4) return;
 
     controller.zoom(
       factor: effectiveFactor,
