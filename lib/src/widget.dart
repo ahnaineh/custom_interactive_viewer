@@ -185,7 +185,7 @@ class CustomInteractiveViewerState extends State<CustomInteractiveViewer>
   @override
   void dispose() {
     // Stop any active animations before disposing to prevent ticker assertion errors
-    controller.stopAnimation();
+    controller.stopAnimation(shouldNotify: false);
 
     // Remove listeners before disposing resources
     controller.removeListener(_onControllerUpdate);
