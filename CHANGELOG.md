@@ -1,6 +1,9 @@
 ## 0.0.9 - 2026-01-01
 ### Fixed
  - Fix: Replace Alignment with AlignmentDirectional to properly support RTL layouts in CustomInteractiveViewer.
+ - Fix: Stop calling notifyListeners during dispose (Thanks @viet-tn)
+ - Fix: clamp ctrl-scroll zoom to minScale/maxScale (Thanks @viet-tn)
+
 
 
 ## 0.0.8 - 2025-11-15
