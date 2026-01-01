@@ -24,7 +24,7 @@ Add the package to your `pubspec.yaml` file:
 
 ```yaml
 dependencies:
-  custom_interactive_viewer: ^0.0.7
+  custom_interactive_viewer: ^0.0.9
 ```
 
 Then import it in your Dart code:
@@ -370,10 +370,6 @@ CustomInteractiveViewer(
   child: YourDocumentWidget(),
 );
 ```
-
-## Version Information
-
-This is the first release (0.0.7) of the Custom Interactive Viewer package. The package provides a solid foundation of features while maintaining good performance and a clean API.
 
 ## Contributing
 

@@ -1,6 +1,6 @@
 name: custom_interactive_viewer
 description: A highly customizable alternative for Flutter's InteractiveViewer with advanced keyboard navigation, gesture controls, rotation support, and programmatic transformations.
-version: 0.0.8
+version: 0.0.9
 homepage: https://ahnaineh.github.io
 repository: https://github.com/ahnaineh/custom_interactive_viewer
 issue_tracker: https://github.com/ahnaineh/custom_interactive_viewer/issues
@@ -12,7 +12,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  vector_math: ^2.1.4
+  vector_math: ^2.2.0
 
 dev_dependencies:
   flutter_test:

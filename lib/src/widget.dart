@@ -301,9 +301,9 @@ class CustomInteractiveViewerState extends State<CustomInteractiveViewer>
                       key: _viewportKey,
                       maxWidth: 1 / 0,
                       maxHeight: 1 / 0,
-                      alignment: Alignment.topLeft,
+                      alignment: AlignmentDirectional.topStart,
                       child: Transform(
-                        alignment: Alignment.topLeft,
+                        alignment: AlignmentDirectional.topStart,
                         transform: controller.transformationMatrix,
                         child: widget.child,
                       ),
