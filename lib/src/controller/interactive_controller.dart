@@ -580,11 +580,13 @@ class CustomInteractiveViewerController extends ChangeNotifier {
   }
 
   /// Stops any active animation. Can be called externally to cancel animations.
-  void stopAnimation() {
+  void stopAnimation({bool shouldNotify = true}) {
     if (_isAnimating) {
       _stopAnimation();
       onEvent?.call(ViewerEvent.animationEnd);
-      notifyListeners();
+      if (shouldNotify) {
+        notifyListeners();
+      }
     }
   }
 
