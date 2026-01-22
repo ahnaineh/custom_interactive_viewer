@@ -230,10 +230,7 @@ class SnapToGridBehavior extends InteractionBehavior {
   final Offset gridSize;
   final double? scaleStep;
 
-  const SnapToGridBehavior({
-    required this.gridSize,
-    this.scaleStep,
-  });
+  const SnapToGridBehavior({required this.gridSize, this.scaleStep});
 
   @override
   TransformationState onResult(

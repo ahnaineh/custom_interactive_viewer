@@ -44,7 +44,6 @@ class KeyboardHandler with WidgetsBindingObserver {
   /// Focus node to receive keyboard input
   final FocusNode focusNode;
 
-
   /// The currently pressed keys
   final Set<LogicalKeyboardKey> _pressedKeys = {};
 
@@ -199,10 +198,7 @@ class KeyboardHandler with WidgetsBindingObserver {
         }
 
         if (targetScale != null && targetScale != currentScale) {
-          request = InteractionRequest(
-            scale: targetScale,
-            focalPoint: center,
-          );
+          request = InteractionRequest(scale: targetScale, focalPoint: center);
         }
       }
     }

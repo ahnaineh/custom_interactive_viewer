@@ -89,9 +89,7 @@ void main() {
   test('snap to grid behavior snaps offsets', () {
     final controller = CustomInteractiveViewerController();
     controller.interactionBehavior = InteractionBehavior.combine(
-      const <InteractionBehavior>[
-        SnapToGridBehavior(gridSize: Offset(10, 10)),
-      ],
+      const <InteractionBehavior>[SnapToGridBehavior(gridSize: Offset(10, 10))],
     );
 
     controller.applyInteraction(
@@ -129,10 +127,12 @@ void main() {
 
     final Offset contentBefore = controller.screenToContentPoint(localCenter);
 
-    final TestGesture g1 =
-        await tester.startGesture(globalCenter - const Offset(20, 0));
-    final TestGesture g2 =
-        await tester.startGesture(globalCenter + const Offset(20, 0));
+    final TestGesture g1 = await tester.startGesture(
+      globalCenter - const Offset(20, 0),
+    );
+    final TestGesture g2 = await tester.startGesture(
+      globalCenter + const Offset(20, 0),
+    );
     await tester.pump();
 
     await g1.moveTo(globalCenter - const Offset(40, 0));
@@ -175,10 +175,12 @@ void main() {
 
     final Offset contentBefore = controller.screenToContentPoint(localCenter);
 
-    final TestGesture g1 =
-        await tester.startGesture(globalCenter - const Offset(20, 0));
-    final TestGesture g2 =
-        await tester.startGesture(globalCenter + const Offset(20, 0));
+    final TestGesture g1 = await tester.startGesture(
+      globalCenter - const Offset(20, 0),
+    );
+    final TestGesture g2 = await tester.startGesture(
+      globalCenter + const Offset(20, 0),
+    );
     await tester.pump();
 
     await g1.moveTo(globalCenter - const Offset(40, 0));

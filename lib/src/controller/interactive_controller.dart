@@ -214,8 +214,10 @@ class CustomInteractiveViewerController extends ChangeNotifier {
       alignmentOrigin: alignmentMetrics.origin,
       alignmentOffset: alignmentMetrics.offset,
     );
-    InteractionRequest adjustedRequest =
-        interactionBehavior.onRequest(request, context);
+    InteractionRequest adjustedRequest = interactionBehavior.onRequest(
+      request,
+      context,
+    );
 
     if (adjustedRequest.scale != null) {
       final double clampedScale = _clampScale(adjustedRequest.scale!);
@@ -267,10 +269,8 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     if (contentSize == null || viewportSize == null) {
       return _AlignmentMetrics.zero;
     }
-    final double originX =
-        (contentSize.width * (alignment.x + 1)) / 2;
-    final double originY =
-        (contentSize.height * (alignment.y + 1)) / 2;
+    final double originX = (contentSize.width * (alignment.x + 1)) / 2;
+    final double originY = (contentSize.height * (alignment.y + 1)) / 2;
     final double offsetX =
         (viewportSize.width - contentSize.width) * (alignment.x + 1) / 2;
     final double offsetY =
@@ -294,8 +294,7 @@ class CustomInteractiveViewerController extends ChangeNotifier {
       viewportSize: viewportSize,
     );
     final Offset correction =
-        alignmentMetrics.offset +
-        alignmentMetrics.origin * (1 - state.scale);
+        alignmentMetrics.offset + alignmentMetrics.origin * (1 - state.scale);
     if (correction == Offset.zero) {
       return state;
     }
@@ -723,10 +722,7 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     );
 
     final targetState = _applyBehaviorToState(
-      _state.copyWith(
-        scale: targetScale,
-        offset: targetOffset,
-      ),
+      _state.copyWith(scale: targetScale, offset: targetOffset),
     );
 
     if (animate) {
@@ -840,10 +836,7 @@ class _AlignmentMetrics {
   final Offset origin;
   final Offset offset;
 
-  const _AlignmentMetrics({
-    required this.origin,
-    required this.offset,
-  });
+  const _AlignmentMetrics({required this.origin, required this.offset});
 
   static const _AlignmentMetrics zero = _AlignmentMetrics(
     origin: Offset.zero,
