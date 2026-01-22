@@ -7,6 +7,9 @@ export 'package:custom_interactive_viewer/src/controller/interactive_controller.
 // Models
 export 'package:custom_interactive_viewer/src/models/transformation_state.dart';
 
+// Interaction pipeline and behaviors
+export 'package:custom_interactive_viewer/src/interaction/interaction_pipeline.dart';
+
 // Enums
 export 'package:custom_interactive_viewer/src/enums/scroll_mode.dart';
 

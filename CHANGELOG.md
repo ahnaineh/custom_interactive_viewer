@@ -1,3 +1,24 @@
+## 0.0.10 - 2026-02-01
+### Added
+- Interaction pipeline with extensible behaviors and central transform math (InteractionRequest/Context/Behavior/Transformer).
+- New interaction behaviors: axis lock, snap-to-grid (offset and scale step), and viewport bounds behavior.
+- Interaction config options for behavior ordering and custom bounds behavior.
+- Programmatic operations (fit/reset/center/zoomToRegion) now apply behaviors and bounds consistently.
+- Widget tests for pinch focal stability, ctrl-scroll zoom, and snap-to-grid behavior.
+
+### Changed
+- Gesture, keyboard, and controller interactions now resolve through the shared pipeline for consistent pan/zoom/rotate behavior.
+- Controller lifecycle now uses explicit attach/detach with vsync ownership and safer focus node handling in the widget.
+- Rotation-aware bounds and centering use transformed corners for accurate constraints.
+- Alignment-aware transforms and bounds now respect RTL/LTR layout direction.
+- Gesture math now uses incremental scale/rotation deltas when pointer counts change.
+
+### Fixed
+- Pinch/scroll zoom now respects focal point via interaction resolution and clamps scale correctly.
+- Double-tap zoom animates using resolved target state to preserve focal intent.
+- Pinch interactions now include focal point panning while scaling.
+- Multi-touch interruptions (3+ pointers) now cancel and block gestures until pointers are released to prevent stuck pinch states.
+
 ## 0.0.9 - 2026-01-01
 ### Fixed
  - Fix: Replace Alignment with AlignmentDirectional to properly support RTL layouts in CustomInteractiveViewer.

@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'package:custom_interactive_viewer/src/interaction/interaction_pipeline.dart';
 import 'package:custom_interactive_viewer/src/widget.dart';
 import 'package:flutter/material.dart';
 import 'package:custom_interactive_viewer/src/models/transformation_state.dart';
@@ -23,6 +24,8 @@ enum ViewerEvent {
 
 /// A controller for [CustomInteractiveViewer] that manages transformation state
 /// and provides methods for programmatically manipulating the view.
+///
+/// A controller should be attached to only one viewer at a time using [attach].
 class CustomInteractiveViewerController extends ChangeNotifier {
   /// Current transformation state
   TransformationState _state;
@@ -32,33 +35,113 @@ class CustomInteractiveViewerController extends ChangeNotifier {
   bool _isScaling = false;
   bool _isAnimating = false;
 
+  /// Optional scale limits to apply for programmatic zooming.
+  double? _minScale;
+  double? _maxScale;
+
   /// Animation controllers and animations
   AnimationController? _animationController;
   Animation<TransformationState>? _transformationAnimation;
 
   /// Ticker provider for animations
-  TickerProvider? _vsync;
+  TickerProvider? vsync;
 
   /// Callback for transformation events
   final void Function(ViewerEvent event)? onEvent;
 
+  /// Tracks which widget owns this controller.
+  Object? _attachmentOwner;
+
+  /// Interaction behavior pipeline.
+  InteractionBehavior interactionBehavior;
+
+  /// Resolved alignment for interaction transforms.
+  Alignment alignment;
+
   /// Creates a controller with initial transformation state.
   CustomInteractiveViewerController({
-    TickerProvider? vsync,
+    this.vsync,
     double initialScale = 1.0,
     Offset initialOffset = Offset.zero,
     double initialRotation = 0.0,
+    double? minScale,
+    double? maxScale,
     this.onEvent,
-  }) : _vsync = vsync,
+  }) : assert(
+         minScale == null || maxScale == null || minScale <= maxScale,
+         'minScale must be <= maxScale',
+       ),
+       _minScale = minScale,
+       _maxScale = maxScale,
+       interactionBehavior = const InteractionBehavior.none(),
+       alignment = Alignment.topLeft,
        _state = TransformationState(
-         scale: initialScale,
+         scale: _clampScaleWithLimits(initialScale, minScale, maxScale),
          offset: initialOffset,
          rotation: initialRotation,
        );
 
-  /// Sets or updates the ticker provider
-  set vsync(TickerProvider? value) {
-    _vsync = value;
+  /// Minimum allowed scale for programmatic zooming.
+  double? get minScale => _minScale;
+
+  /// Maximum allowed scale for programmatic zooming.
+  double? get maxScale => _maxScale;
+
+  /// Update scale limits used for programmatic zooming.
+  void setScaleLimits({double? minScale, double? maxScale}) {
+    _minScale = minScale;
+    _maxScale = maxScale;
+    assert(
+      _minScale == null || _maxScale == null || _minScale! <= _maxScale!,
+      'minScale must be <= maxScale',
+    );
+    final double clampedScale = _clampScale(_state.scale);
+    if (clampedScale != _state.scale) {
+      updateState(_state.copyWith(scale: clampedScale));
+    }
+  }
+
+  /// Attach this controller to a widget owner.
+  void attach(
+    Object owner, {
+    TickerProvider? vsync,
+    double? minScale,
+    double? maxScale,
+    InteractionBehavior? behavior,
+    Alignment? alignment,
+  }) {
+    assert(
+      _attachmentOwner == null || _attachmentOwner == owner,
+      'CustomInteractiveViewerController is already attached to another widget.',
+    );
+    if (_attachmentOwner != null && _attachmentOwner != owner) {
+      throw StateError(
+        'CustomInteractiveViewerController is already attached to another widget.',
+      );
+    }
+    _attachmentOwner = owner;
+    if (vsync != null) {
+      this.vsync = vsync;
+    }
+    if (minScale != null || maxScale != null) {
+      setScaleLimits(minScale: minScale, maxScale: maxScale);
+    }
+    if (behavior != null) {
+      interactionBehavior = behavior;
+    }
+    if (alignment != null) {
+      this.alignment = alignment;
+    }
+  }
+
+  /// Detach this controller from the owning widget.
+  void detach(Object owner) {
+    if (_attachmentOwner == owner) {
+      if (vsync == owner) {
+        vsync = null;
+      }
+      _attachmentOwner = null;
+    }
   }
 
   /// Current scale factor
@@ -96,6 +179,7 @@ class CustomInteractiveViewerController extends ChangeNotifier {
       rotation: newRotation,
     );
 
+    onEvent?.call(ViewerEvent.transformationUpdate);
     notifyListeners();
   }
 
@@ -104,7 +188,118 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     if (newState == _state) return;
 
     _state = newState;
+    onEvent?.call(ViewerEvent.transformationUpdate);
     notifyListeners();
+  }
+
+  /// Resolves a target state for the given interaction request.
+  TransformationState resolveInteraction(
+    InteractionRequest request, {
+    TransformationState? baseState,
+  }) {
+    final TransformationState startingState = baseState ?? _state;
+    final Size? contentSize = _getContentSize?.call();
+    final Size? viewportSize = _getViewportSize?.call();
+    final _AlignmentMetrics alignmentMetrics = _resolveAlignmentMetrics(
+      contentSize: contentSize,
+      viewportSize: viewportSize,
+    );
+    final InteractionContext context = InteractionContext(
+      state: startingState,
+      contentSize: contentSize,
+      viewportSize: viewportSize,
+      minScale: _minScale,
+      maxScale: _maxScale,
+      alignment: alignment,
+      alignmentOrigin: alignmentMetrics.origin,
+      alignmentOffset: alignmentMetrics.offset,
+    );
+    InteractionRequest adjustedRequest =
+        interactionBehavior.onRequest(request, context);
+
+    if (adjustedRequest.scale != null) {
+      final double clampedScale = _clampScale(adjustedRequest.scale!);
+      if (clampedScale != adjustedRequest.scale) {
+        adjustedRequest = adjustedRequest.copyWith(scale: clampedScale);
+      }
+    }
+
+    final TransformationState nextState = InteractionTransformer.apply(
+      state: startingState,
+      request: adjustedRequest,
+      alignmentOrigin: alignmentMetrics.origin,
+      alignmentOffset: alignmentMetrics.offset,
+    );
+
+    final InteractionContext nextContext = context.copyWith(state: nextState);
+    return interactionBehavior.onResult(nextState, nextContext);
+  }
+
+  /// Applies an interaction request immediately.
+  void applyInteraction(InteractionRequest request) {
+    updateState(resolveInteraction(request));
+  }
+
+  TransformationState _applyBehaviorToState(TransformationState state) {
+    final Size? contentSize = _getContentSize?.call();
+    final Size? viewportSize = _getViewportSize?.call();
+    final _AlignmentMetrics alignmentMetrics = _resolveAlignmentMetrics(
+      contentSize: contentSize,
+      viewportSize: viewportSize,
+    );
+    final InteractionContext context = InteractionContext(
+      state: state,
+      contentSize: contentSize,
+      viewportSize: viewportSize,
+      minScale: _minScale,
+      maxScale: _maxScale,
+      alignment: alignment,
+      alignmentOrigin: alignmentMetrics.origin,
+      alignmentOffset: alignmentMetrics.offset,
+    );
+    return interactionBehavior.onResult(state, context);
+  }
+
+  _AlignmentMetrics _resolveAlignmentMetrics({
+    required Size? contentSize,
+    required Size? viewportSize,
+  }) {
+    if (contentSize == null || viewportSize == null) {
+      return _AlignmentMetrics.zero;
+    }
+    final double originX =
+        (contentSize.width * (alignment.x + 1)) / 2;
+    final double originY =
+        (contentSize.height * (alignment.y + 1)) / 2;
+    final double offsetX =
+        (viewportSize.width - contentSize.width) * (alignment.x + 1) / 2;
+    final double offsetY =
+        (viewportSize.height - contentSize.height) * (alignment.y + 1) / 2;
+    return _AlignmentMetrics(
+      origin: Offset(originX, originY),
+      offset: Offset(offsetX, offsetY),
+    );
+  }
+
+  TransformationState _applyAlignmentOffset(
+    TransformationState state, {
+    required Size? contentSize,
+    required Size? viewportSize,
+  }) {
+    if (contentSize == null || viewportSize == null) {
+      return state;
+    }
+    final _AlignmentMetrics alignmentMetrics = _resolveAlignmentMetrics(
+      contentSize: contentSize,
+      viewportSize: viewportSize,
+    );
+    final Offset correction =
+        alignmentMetrics.offset +
+        alignmentMetrics.origin * (1 - state.scale);
+    if (correction == Offset.zero) {
+      return state;
+    }
+    return state.copyWith(offset: state.offset - correction);
   }
 
   /// Gets the current transformation matrix
@@ -126,24 +321,13 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     Curve curve = Curves.easeInOut,
   }) async {
     final double absScaleFactor = 1.0 + factor.abs();
-    final double targetScale =
+    double targetScale =
         factor >= 0
             ? _state.scale * absScaleFactor
             : _state.scale / absScaleFactor;
-
-    TransformationState targetState;
-
-    if (focalPoint != null) {
-      // Convert the screen focal point to content coordinates before scaling
-      final Offset contentFocalBefore = _state.screenToContentPoint(focalPoint);
-      // Apply the new scale and adjust offset so the focal point remains fixed
-      targetState = _state.copyWith(
-        scale: targetScale,
-        offset: focalPoint - contentFocalBefore * targetScale,
-      );
-    } else {
-      targetState = _state.copyWith(scale: targetScale);
-    }
+    final TransformationState targetState = resolveInteraction(
+      InteractionRequest(scale: targetScale, focalPoint: focalPoint),
+    );
 
     await animateTo(
       targetState: targetState,
@@ -164,7 +348,9 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     Duration duration = const Duration(milliseconds: 300),
     Curve curve = Curves.easeInOut,
   }) async {
-    final targetState = _state.copyWith(offset: _state.offset + offset);
+    final TransformationState targetState = resolveInteraction(
+      InteractionRequest(panDelta: offset),
+    );
 
     if (animate) {
       await animateTo(
@@ -185,29 +371,10 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     Duration duration = const Duration(milliseconds: 300),
     Curve curve = Curves.easeInOut,
   }) async {
-    final targetRotation = _state.rotation + angleRadians;
-    TransformationState targetState;
-
-    if (focalPoint != null) {
-      // Keep the focal point in the same position on screen during rotation
-      final Offset beforeRotationOffset = _state.screenToContentPoint(
-        focalPoint,
-      );
-
-      targetState = _state.copyWith(rotation: targetRotation);
-
-      final Offset afterRotationOffset = targetState.screenToContentPoint(
-        focalPoint,
-      );
-      final Offset offsetAdjustment =
-          afterRotationOffset - beforeRotationOffset;
-
-      targetState = targetState.copyWith(
-        offset: _state.offset - offsetAdjustment * targetState.scale,
-      );
-    } else {
-      targetState = _state.copyWith(rotation: targetRotation);
-    }
+    final double targetRotation = _state.rotation + angleRadians;
+    final TransformationState targetState = resolveInteraction(
+      InteractionRequest(rotation: targetRotation, focalPoint: focalPoint),
+    );
 
     if (animate) {
       await animateTo(
@@ -240,12 +407,30 @@ class CustomInteractiveViewerController extends ChangeNotifier {
   }
 
   /// Convert a point from screen coordinates to content coordinates
-  Offset screenToContentPoint(Offset screenPoint) =>
-      _state.screenToContentPoint(screenPoint);
+  Offset screenToContentPoint(Offset screenPoint) {
+    final _AlignmentMetrics alignmentMetrics = _resolveAlignmentMetrics(
+      contentSize: _getContentSize?.call(),
+      viewportSize: _getViewportSize?.call(),
+    );
+    return _state.screenToContentPoint(
+      screenPoint,
+      alignmentOrigin: alignmentMetrics.origin,
+      alignmentOffset: alignmentMetrics.offset,
+    );
+  }
 
   /// Convert a point from content coordinates to screen coordinates
-  Offset contentToScreenPoint(Offset contentPoint) =>
-      _state.contentToScreenPoint(contentPoint);
+  Offset contentToScreenPoint(Offset contentPoint) {
+    final _AlignmentMetrics alignmentMetrics = _resolveAlignmentMetrics(
+      contentSize: _getContentSize?.call(),
+      viewportSize: _getViewportSize?.call(),
+    );
+    return _state.contentToScreenPoint(
+      contentPoint,
+      alignmentOrigin: alignmentMetrics.origin,
+      alignmentOffset: alignmentMetrics.offset,
+    );
+  }
 
   /// Fit the content to the screen size
   Future<void> fitToScreen(
@@ -256,11 +441,26 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     Duration duration = const Duration(milliseconds: 300),
     Curve curve = Curves.easeInOut,
   }) async {
-    final targetState = TransformationState.fitContent(
+    final baseState = TransformationState.fitContent(
       contentSize,
       viewportSize,
       padding: padding,
     );
+    final double targetScale = _clampScale(baseState.scale);
+    final TransformationState unclampedState =
+        targetScale == baseState.scale
+            ? baseState
+            : TransformationState.centerContent(
+              contentSize,
+              viewportSize,
+              targetScale,
+            );
+    final TransformationState alignedState = _applyAlignmentOffset(
+      unclampedState,
+      contentSize: contentSize,
+      viewportSize: viewportSize,
+    );
+    final TransformationState targetState = _applyBehaviorToState(alignedState);
 
     if (animate) {
       await animateTo(
@@ -279,7 +479,7 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     Duration duration = const Duration(milliseconds: 300),
     Curve curve = Curves.easeInOut,
   }) async {
-    final targetState = TransformationState();
+    final targetState = _applyBehaviorToState(const TransformationState());
 
     if (animate) {
       await animateTo(
@@ -304,7 +504,7 @@ class CustomInteractiveViewerController extends ChangeNotifier {
       return;
     }
 
-    if (_vsync == null) {
+    if (vsync == null) {
       throw StateError(
         'Setting vsync is required to be able to perform animations',
       );
@@ -317,7 +517,7 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     // Stop and dispose any previous animation controller
     _stopAnimation();
     _animationController = AnimationController(
-      vsync: _vsync!,
+      vsync: vsync!,
       duration: duration,
     );
 
@@ -353,11 +553,29 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     Curve curve = Curves.easeInOut,
     double padding = 20.0,
   }) async {
-    final targetState = TransformationState.zoomToRegion(
+    final baseState = TransformationState.zoomToRegion(
       region,
       viewportSize,
       padding: padding,
     );
+    final double targetScale = _clampScale(baseState.scale);
+    final Offset regionCenter = region.center;
+    final TransformationState unclampedState =
+        targetScale == baseState.scale
+            ? baseState
+            : baseState.copyWith(
+              scale: targetScale,
+              offset: Offset(
+                viewportSize.width / 2 - regionCenter.dx * targetScale,
+                viewportSize.height / 2 - regionCenter.dy * targetScale,
+              ),
+            );
+    final TransformationState alignedState = _applyAlignmentOffset(
+      unclampedState,
+      contentSize: _getContentSize?.call(),
+      viewportSize: viewportSize,
+    );
+    final TransformationState targetState = _applyBehaviorToState(alignedState);
 
     if (animate) {
       await animateTo(
@@ -372,9 +590,15 @@ class CustomInteractiveViewerController extends ChangeNotifier {
 
   /// Ensures content stays within bounds
   void constrainToBounds(Size contentSize, Size viewportSize) {
+    final _AlignmentMetrics alignmentMetrics = _resolveAlignmentMetrics(
+      contentSize: contentSize,
+      viewportSize: viewportSize,
+    );
     final constrainedState = _state.constrainToViewport(
       contentSize,
       viewportSize,
+      alignmentOrigin: alignmentMetrics.origin,
+      alignmentOffset: alignmentMetrics.offset,
     );
     if (constrainedState != _state) {
       updateState(constrainedState);
@@ -422,15 +646,23 @@ class CustomInteractiveViewerController extends ChangeNotifier {
       finalViewportSize,
       _state.scale,
     );
+    final TransformationState alignedState = _applyAlignmentOffset(
+      targetState,
+      contentSize: finalContentSize,
+      viewportSize: finalViewportSize,
+    );
+    final TransformationState finalTargetState = _applyBehaviorToState(
+      alignedState,
+    );
 
     if (animate) {
       await animateTo(
-        targetState: targetState,
+        targetState: finalTargetState,
         duration: duration,
         curve: curve,
       );
     } else {
-      updateState(targetState);
+      updateState(finalTargetState);
     }
   }
 
@@ -464,63 +696,47 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     final Offset rectCenter = rect.center;
 
     // Determine the target scale
-    final double targetScale = scale ?? _state.scale;
+    final double targetScale =
+        scale == null ? _state.scale : _clampScale(scale);
 
-    // If the content is rotated, we need to adjust the offset calculation
-    if (_state.rotation != 0) {
-      // Create a transformation matrix that represents the desired state
-      // First, we need to transform the rectangle center to screen coordinates
-      // considering the current rotation
-      final double cosRotation = cos(_state.rotation);
-      final double sinRotation = sin(_state.rotation);
+    final _AlignmentMetrics alignmentMetrics = _resolveAlignmentMetrics(
+      contentSize: _getContentSize?.call(),
+      viewportSize: finalViewportSize,
+    );
+    final Offset rectDelta = rectCenter - alignmentMetrics.origin;
+    final double cosRotation = cos(_state.rotation);
+    final double sinRotation = sin(_state.rotation);
+    final Offset rotated = Offset(
+      rectDelta.dx * cosRotation - rectDelta.dy * sinRotation,
+      rectDelta.dx * sinRotation + rectDelta.dy * cosRotation,
+    );
 
-      // Transform the rect center considering rotation around origin (0,0)
-      final double rotatedX =
-          rectCenter.dx * cosRotation - rectCenter.dy * sinRotation;
-      final double rotatedY =
-          rectCenter.dx * sinRotation + rectCenter.dy * cosRotation;
+    final Offset targetOffset = Offset(
+      (finalViewportSize.width / 2) -
+          alignmentMetrics.offset.dx -
+          alignmentMetrics.origin.dx -
+          (rotated.dx * targetScale),
+      (finalViewportSize.height / 2) -
+          alignmentMetrics.offset.dy -
+          alignmentMetrics.origin.dy -
+          (rotated.dy * targetScale),
+    );
 
-      // Calculate the offset needed to center the rotated point
-      final Offset targetOffset = Offset(
-        (finalViewportSize.width / 2) - (rotatedX * targetScale),
-        (finalViewportSize.height / 2) - (rotatedY * targetScale),
-      );
-
-      final targetState = _state.copyWith(
+    final targetState = _applyBehaviorToState(
+      _state.copyWith(
         scale: targetScale,
         offset: targetOffset,
-      );
+      ),
+    );
 
-      if (animate) {
-        await animateTo(
-          targetState: targetState,
-          duration: duration,
-          curve: curve,
-        );
-      } else {
-        updateState(targetState);
-      }
+    if (animate) {
+      await animateTo(
+        targetState: targetState,
+        duration: duration,
+        curve: curve,
+      );
     } else {
-      // No rotation - use simple calculation
-      final Offset targetOffset = Offset(
-        (finalViewportSize.width / 2) - (rectCenter.dx * targetScale),
-        (finalViewportSize.height / 2) - (rectCenter.dy * targetScale),
-      );
-
-      final targetState = _state.copyWith(
-        scale: targetScale,
-        offset: targetOffset,
-      );
-
-      if (animate) {
-        await animateTo(
-          targetState: targetState,
-          duration: duration,
-          curve: curve,
-        );
-      } else {
-        updateState(targetState);
-      }
+      updateState(targetState);
     }
   }
 
@@ -528,23 +744,45 @@ class CustomInteractiveViewerController extends ChangeNotifier {
   void setPanning(bool value) {
     if (_isPanning == value) return;
 
+    final bool wasTransforming = _isPanning || _isScaling;
     _isPanning = value;
-    if (value) {
-      onEvent?.call(ViewerEvent.transformationStart);
-    } else {
-      onEvent?.call(ViewerEvent.transformationEnd);
-    }
-    notifyListeners();
+    _notifyTransformingState(wasTransforming);
   }
 
   /// Sets scaling state - for internal use
   void setScaling(bool value) {
     if (_isScaling == value) return;
 
+    final bool wasTransforming = _isPanning || _isScaling;
     _isScaling = value;
-    if (value) {
+    _notifyTransformingState(wasTransforming);
+  }
+
+  double _clampScale(double scale) {
+    final double? min = _minScale;
+    final double? max = _maxScale;
+    if (min == null && max == null) {
+      return scale;
+    }
+    return scale.clamp(min ?? scale, max ?? scale);
+  }
+
+  static double _clampScaleWithLimits(
+    double scale,
+    double? minScale,
+    double? maxScale,
+  ) {
+    if (minScale == null && maxScale == null) {
+      return scale;
+    }
+    return scale.clamp(minScale ?? scale, maxScale ?? scale);
+  }
+
+  void _notifyTransformingState(bool wasTransforming) {
+    final bool isTransforming = _isPanning || _isScaling;
+    if (!wasTransforming && isTransforming) {
       onEvent?.call(ViewerEvent.transformationStart);
-    } else {
+    } else if (wasTransforming && !isTransforming) {
       onEvent?.call(ViewerEvent.transformationEnd);
     }
     notifyListeners();
@@ -596,6 +834,21 @@ class CustomInteractiveViewerController extends ChangeNotifier {
     _stopAnimation();
     super.dispose();
   }
+}
+
+class _AlignmentMetrics {
+  final Offset origin;
+  final Offset offset;
+
+  const _AlignmentMetrics({
+    required this.origin,
+    required this.offset,
+  });
+
+  static const _AlignmentMetrics zero = _AlignmentMetrics(
+    origin: Offset.zero,
+    offset: Offset.zero,
+  );
 }
 
 /// A [Tween] for animating between two [TransformationState]s

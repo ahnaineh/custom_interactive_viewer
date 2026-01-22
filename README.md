@@ -79,6 +79,37 @@ CustomInteractiveViewer(
 );
 ```
 
+### Content Size Resolution
+
+CustomInteractiveViewer needs the logical content size to center content and
+constrain panning when bounds are enabled. It resolves size in this order:
+
+1) contentSizeGetter (source of truth)
+2) contentSize (fixed size)
+3) inferred from the child's render size (default)
+
+Use contentSizeGetter when:
+- the child paints outside its layout bounds (CustomPaint)
+- the logical content is larger than the laid-out widget (virtualized lists/slivers)
+- you need to include extra margins/padding in the logical bounds
+
+When provided, it is treated as the source of truth; return a non-null size when
+calling center/fit or when bounds are constrained.
+
+Example:
+
+```dart
+CustomInteractiveViewer(
+  contentSizeGetter: () => const Size(4000, 2000),
+  child: CustomPaint(
+    painter: MyCanvasPainter(),
+  ),
+);
+```
+
+Tip: For normal widgets (Image, Container, Stack), you can omit both and let
+the viewer infer the size.
+
 ### Using Preset Configurations
 
 ```dart
@@ -234,6 +265,7 @@ CustomInteractiveViewer({
   required Widget child,
   CustomInteractiveViewerController? controller,
   Size? contentSize,
+  Size? Function()? contentSizeGetter,
   ZoomConfig zoomConfig = const ZoomConfig(),
   InteractionConfig interactionConfig = const InteractionConfig(),
   KeyboardConfig keyboardConfig = const KeyboardConfig(),

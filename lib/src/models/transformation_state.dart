@@ -1,7 +1,6 @@
 import 'dart:math';
 import 'package:custom_interactive_viewer/src/widget.dart';
 import 'package:flutter/material.dart';
-import 'package:vector_math/vector_math_64.dart';
 
 /// Represents the transformation state of a [CustomInteractiveViewer].
 ///
@@ -40,32 +39,43 @@ class TransformationState {
   /// Returns a [Matrix4] representing the current transformation.
   Matrix4 toMatrix4() {
     return Matrix4.identity()
-      ..translate(offset.dx, offset.dy)
-      ..scale(scale)
+      ..translateByDouble(offset.dx, offset.dy, 0, 1)
+      ..scaleByDouble(scale, scale, 1, 1)
       ..rotateZ(rotation);
   }
 
   /// Converts a point from screen coordinates to content coordinates.
-  Offset screenToContentPoint(Offset screenPoint) {
-    // The inverse of our transformation
-    final Matrix4 inverseTransform =
-        Matrix4.identity()
-          ..rotateZ(-rotation)
-          ..scale(1 / scale)
-          ..translate(-offset.dx, -offset.dy);
-
-    final Vector3 contentPoint = inverseTransform.transform3(
-      Vector3(screenPoint.dx, screenPoint.dy, 0),
+  Offset screenToContentPoint(
+    Offset screenPoint, {
+    Offset alignmentOrigin = Offset.zero,
+    Offset alignmentOffset = Offset.zero,
+  }) {
+    final Offset adjusted =
+        screenPoint - alignmentOffset - offset - alignmentOrigin;
+    final Offset scaled = adjusted / scale;
+    final double cosTheta = cos(rotation);
+    final double sinTheta = sin(rotation);
+    final Offset unrotated = Offset(
+      scaled.dx * cosTheta + scaled.dy * sinTheta,
+      -scaled.dx * sinTheta + scaled.dy * cosTheta,
     );
-    return Offset(contentPoint.x, contentPoint.y);
+    return unrotated + alignmentOrigin;
   }
 
   /// Converts a point from content coordinates to screen coordinates.
-  Offset contentToScreenPoint(Offset contentPoint) {
-    final Vector3 screenPoint = toMatrix4().transform3(
-      Vector3(contentPoint.dx, contentPoint.dy, 0),
+  Offset contentToScreenPoint(
+    Offset contentPoint, {
+    Offset alignmentOrigin = Offset.zero,
+    Offset alignmentOffset = Offset.zero,
+  }) {
+    final Offset contentDelta = contentPoint - alignmentOrigin;
+    final double cosTheta = cos(rotation);
+    final double sinTheta = sin(rotation);
+    final Offset rotated = Offset(
+      contentDelta.dx * cosTheta - contentDelta.dy * sinTheta,
+      contentDelta.dx * sinTheta + contentDelta.dy * cosTheta,
     );
-    return Offset(screenPoint.x, screenPoint.y);
+    return alignmentOffset + offset + alignmentOrigin + rotated * scale;
   }
 
   /// Creates a [TransformationState] to fit the content to the viewport.
@@ -131,58 +141,62 @@ class TransformationState {
   }
 
   /// Constrains the transformation to the given bounds.
-  TransformationState constrainToViewport(Size contentSize, Size viewportSize) {
+  TransformationState constrainToViewport(
+    Size contentSize,
+    Size viewportSize, {
+    Offset alignmentOrigin = Offset.zero,
+    Offset alignmentOffset = Offset.zero,
+  }) {
     double newX = offset.dx;
     double newY = offset.dy;
 
-    // Calculate the bounding box of the rotated content
-    final double absRotation = rotation.abs();
-    final double cosRotation = cos(absRotation);
-    final double sinRotation = sin(absRotation);
+    final List<Offset> corners = <Offset>[
+      const Offset(0, 0),
+      Offset(contentSize.width, 0),
+      Offset(0, contentSize.height),
+      Offset(contentSize.width, contentSize.height),
+    ];
 
-    // Calculate the dimensions of the bounding box that contains the rotated content
-    final double rotatedWidth =
-        (contentSize.width * cosRotation + contentSize.height * sinRotation)
-            .abs() *
-        scale;
-    final double rotatedHeight =
-        (contentSize.width * sinRotation + contentSize.height * cosRotation)
-            .abs() *
-        scale;
+    double minX = double.infinity;
+    double maxX = double.negativeInfinity;
+    double minY = double.infinity;
+    double maxY = double.negativeInfinity;
+
+    for (final corner in corners) {
+      final Offset transformed = contentToScreenPoint(
+        corner,
+        alignmentOrigin: alignmentOrigin,
+        alignmentOffset: alignmentOffset,
+      );
+      final double x = transformed.dx - offset.dx;
+      final double y = transformed.dy - offset.dy;
+      minX = min(minX, x);
+      maxX = max(maxX, x);
+      minY = min(minY, y);
+      maxY = max(maxY, y);
+    }
+
+    final double rotatedWidth = maxX - minX;
+    final double rotatedHeight = maxY - minY;
 
     if (rotatedWidth <= viewportSize.width) {
-      // If rotated content is smaller than viewport, center it horizontally
-      newX = (viewportSize.width - contentSize.width * scale) / 2;
+      // If rotated content is smaller than viewport, center it horizontally.
+      newX = (viewportSize.width - rotatedWidth) / 2 - minX;
     } else {
-      // Otherwise restrict panning to keep rotated content filling the viewport
-      // Calculate the offset adjustment needed due to rotation
-      final double centerX = contentSize.width * scale / 2;
-      final double centerY = contentSize.height * scale / 2;
-      final double rotatedCenterX =
-          centerX * cosRotation - centerY * sinRotation;
-      final double offsetAdjustmentX = centerX - rotatedCenterX;
-
-      final double minX = viewportSize.width - rotatedWidth + offsetAdjustmentX;
-      final double maxX = offsetAdjustmentX;
-      newX = newX.clamp(minX, maxX);
+      // Otherwise restrict panning to keep rotated content filling the viewport.
+      final double minOffsetX = viewportSize.width - maxX;
+      final double maxOffsetX = -minX;
+      newX = newX.clamp(minOffsetX, maxOffsetX);
     }
 
     if (rotatedHeight <= viewportSize.height) {
-      // If rotated content is smaller than viewport, center it vertically
-      newY = (viewportSize.height - contentSize.height * scale) / 2;
+      // If rotated content is smaller than viewport, center it vertically.
+      newY = (viewportSize.height - rotatedHeight) / 2 - minY;
     } else {
-      // Otherwise restrict panning to keep rotated content filling the viewport
-      // Calculate the offset adjustment needed due to rotation
-      final double centerX = contentSize.width * scale / 2;
-      final double centerY = contentSize.height * scale / 2;
-      final double rotatedCenterY =
-          centerX * sinRotation + centerY * cosRotation;
-      final double offsetAdjustmentY = centerY - rotatedCenterY;
-
-      final double minY =
-          viewportSize.height - rotatedHeight + offsetAdjustmentY;
-      final double maxY = offsetAdjustmentY;
-      newY = newY.clamp(minY, maxY);
+      // Otherwise restrict panning to keep rotated content filling the viewport.
+      final double minOffsetY = viewportSize.height - maxY;
+      final double maxOffsetY = -minY;
+      newY = newY.clamp(minOffsetY, maxOffsetY);
     }
 
     if (newX == offset.dx && newY == offset.dy) {

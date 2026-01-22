@@ -1,8 +1,8 @@
 import 'dart:async';
+import 'package:custom_interactive_viewer/src/interaction/interaction_pipeline.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:custom_interactive_viewer/src/controller/interactive_controller.dart';
-import 'package:custom_interactive_viewer/src/enums/scroll_mode.dart';
 
 /// A handler for keyboard interactions with [CustomInteractiveViewer]
 class KeyboardHandler with WidgetsBindingObserver {
@@ -44,11 +44,6 @@ class KeyboardHandler with WidgetsBindingObserver {
   /// Focus node to receive keyboard input
   final FocusNode focusNode;
 
-  /// Constrains operations to the content bounds if true
-  final bool constrainBounds;
-
-  /// Size of the content being viewed
-  final Size? contentSize;
 
   /// The currently pressed keys
   final Set<LogicalKeyboardKey> _pressedKeys = {};
@@ -68,17 +63,8 @@ class KeyboardHandler with WidgetsBindingObserver {
   /// The reference to the viewport
   final GlobalKey viewportKey;
 
-  /// Minimum allowed scale
-  final double minScale;
-
-  /// Maximum allowed scale
-  final double maxScale;
-
   /// Whether keyboard zoom is enabled
   final bool enableKeyboardZoom;
-
-  /// The scroll mode that determines allowed scroll directions
-  final ScrollMode scrollMode;
 
   /// Creates a keyboard handler
   KeyboardHandler({
@@ -93,14 +79,9 @@ class KeyboardHandler with WidgetsBindingObserver {
     required this.keyboardAnimationDuration,
     required this.keyboardAnimationCurve,
     required this.focusNode,
-    required this.constrainBounds,
-    required this.contentSize,
     required this.viewportKey,
-    required this.minScale,
-    required this.maxScale,
     required this.enableKeyboardZoom,
     this.invertArrowKeyDirection = false,
-    this.scrollMode = ScrollMode.both,
   }) {
     // Register as an observer to detect app lifecycle changes
     WidgetsBinding.instance.addObserver(this);
@@ -182,9 +163,7 @@ class KeyboardHandler with WidgetsBindingObserver {
       return;
     }
 
-    double? newScale;
-    Offset? newOffset;
-    bool actionPerformed = false;
+    InteractionRequest? request;
 
     // Process zoom keys
     if (enableKeyboardZoom) {
@@ -207,66 +186,55 @@ class KeyboardHandler with WidgetsBindingObserver {
 
         // Calculate the new scale factor
         final double currentScale = controller.scale;
-        double targetScale = currentScale;
+        double? targetScale;
 
         if (_pressedKeys.contains(LogicalKeyboardKey.minus) ||
             _pressedKeys.contains(LogicalKeyboardKey.numpadSubtract)) {
-          targetScale = (currentScale / keyboardZoomFactor).clamp(
-            minScale,
-            maxScale,
-          );
+          targetScale = currentScale / keyboardZoomFactor;
         } else if ((_pressedKeys.contains(LogicalKeyboardKey.equal) &&
                 HardwareKeyboard.instance.isShiftPressed) ||
             _pressedKeys.contains(LogicalKeyboardKey.add) ||
             _pressedKeys.contains(LogicalKeyboardKey.numpadAdd)) {
-          targetScale = (currentScale * keyboardZoomFactor).clamp(
-            minScale,
-            maxScale,
-          );
+          targetScale = currentScale * keyboardZoomFactor;
         }
 
-        if (targetScale != currentScale) {
-          // Get the center point in content coordinates before scaling
-          final Offset contentCenter = controller.state.screenToContentPoint(
-            center,
+        if (targetScale != null && targetScale != currentScale) {
+          request = InteractionRequest(
+            scale: targetScale,
+            focalPoint: center,
           );
-
-          // Calculate the new offset to keep the center point fixed during zoom
-          newOffset = center - (contentCenter * targetScale);
-          newScale = targetScale;
-          actionPerformed = true;
         }
       }
     }
 
     // Process arrow keys for panning if no zoom action was performed
-    if (!actionPerformed) {
+    if (request == null) {
       final Offset panDelta = _calculatePanDeltaFromKeys();
       if (panDelta != Offset.zero) {
-        newOffset = controller.offset + panDelta;
-        actionPerformed = true;
+        request = InteractionRequest(panDelta: panDelta);
       }
     }
 
     // Apply actions if needed
-    if (actionPerformed) {
+    if (request != null) {
+      if (request.scale != null) {
+        controller.setScaling(true);
+      } else {
+        controller.setPanning(true);
+      }
+
       if (animateKeyboardTransitions) {
         // Use shorter animation duration for key repeats to avoid queuing delays
-        final isKeyRepeat = _keyRepeatTimer?.isActive ?? false;
-        final effectiveDuration =
+        final bool isKeyRepeat = _keyRepeatTimer?.isActive ?? false;
+        final Duration effectiveDuration =
             isKeyRepeat
                 ? Duration(
                   milliseconds: keyboardAnimationDuration.inMilliseconds ~/ 10,
                 )
                 : keyboardAnimationDuration;
 
-        // Create a target transformation state
-        final targetState = controller.state.copyWith(
-          scale: newScale,
-          offset: newOffset,
-        );
+        final targetState = controller.resolveInteraction(request);
 
-        // Animate to the new state
         controller.animateTo(
           targetState: targetState,
           duration: effectiveDuration,
@@ -274,17 +242,11 @@ class KeyboardHandler with WidgetsBindingObserver {
           animate: true,
         );
       } else {
-        // Update immediately without animation
-        controller.update(newScale: newScale, newOffset: newOffset);
+        controller.applyInteraction(request);
       }
 
-      if (constrainBounds && contentSize != null) {
-        final RenderBox? box =
-            viewportKey.currentContext?.findRenderObject() as RenderBox?;
-        if (box != null) {
-          controller.constrainToBounds(contentSize!, box.size);
-        }
-      }
+      controller.setScaling(false);
+      controller.setPanning(false);
     }
   }
 
@@ -308,17 +270,7 @@ class KeyboardHandler with WidgetsBindingObserver {
       dy -= keyboardPanDistance * directionMultiplier;
     }
 
-    // Constrain pan delta based on scroll mode
-    switch (scrollMode) {
-      case ScrollMode.horizontal:
-        return Offset(dx, 0);
-      case ScrollMode.vertical:
-        return Offset(0, dy);
-      case ScrollMode.none:
-        return Offset.zero;
-      case ScrollMode.both:
-        return Offset(dx, dy);
-    }
+    return Offset(dx, dy);
   }
 
   /// Setup key repeat timer when a key is pressed

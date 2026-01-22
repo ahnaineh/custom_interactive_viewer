@@ -1,11 +1,9 @@
-import 'dart:async';
-import 'dart:math' as math;
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 import 'package:custom_interactive_viewer/src/controller/interactive_controller.dart';
-import 'package:custom_interactive_viewer/src/enums/scroll_mode.dart';
+import 'package:custom_interactive_viewer/src/interaction/interaction_pipeline.dart';
 
 /// A handler for gesture interactions with [CustomInteractiveViewer]
 class GestureHandler {
@@ -14,9 +12,6 @@ class GestureHandler {
 
   /// Whether rotation is enabled
   final bool enableRotation;
-
-  /// Whether to constrain content to bounds
-  final bool constrainBounds;
 
   /// Whether fling behavior is enabled
   final bool enableFling;
@@ -30,32 +25,29 @@ class GestureHandler {
   /// Factor by which to zoom on double-tap
   final double doubleTapZoomFactor;
 
-  /// Size of the content being viewed
-  final Size? contentSize;
-
   /// The reference to the viewport
   final GlobalKey viewportKey;
 
   /// Whether Ctrl+Scroll scaling is enabled
   final bool enableCtrlScrollToScale;
 
-  /// Minimum allowed scale
-  final double minScale;
-
-  /// Maximum allowed scale
-  final double maxScale;
-
-  /// The scroll mode that determines allowed scroll directions
-  final ScrollMode scrollMode;
-
   /// Stores the last focal point during scale gesture
   Offset _lastFocalPoint = Offset.zero;
 
-  /// Stores the last scale during scale gesture
+  /// Stores the last scale factor reported by the gesture
   double _lastScale = 1.0;
 
-  /// Stores the last rotation during scale gesture
+  /// Stores the last rotation reported by the gesture
   double _lastRotation = 0.0;
+
+  /// Stores the last pointer count to detect changes mid-gesture
+  int _lastPointerCount = 0;
+
+  /// Tracks whether a scale or rotate gesture occurred during this interaction
+  bool _hadScaleOrRotate = false;
+
+  /// Tracks whether scaling is currently active for this gesture
+  bool _isScalingGesture = false;
 
   /// Tracks position of double tap for zoom
   Offset? _doubleTapPosition;
@@ -63,127 +55,219 @@ class GestureHandler {
   /// Tracks whether Ctrl key is currently pressed
   bool isCtrlPressed = false;
 
+  /// Tracks active pointers to avoid phantom pointer counts.
+  final Set<int> _activePointers = <int>{};
+
+  /// Ignore gesture updates until all pointers are released.
+  bool _ignoreGesture = false;
+
   /// Simulation for the fling animation
   Simulation? _flingSimulation;
 
-  /// Timer for the fling animation
-  Timer? _flingTimer;
+  /// Frame callback id for the fling animation
+  int? _flingFrameCallbackId;
+
+  /// Timestamp for the start of the current fling
+  Duration? _flingStartTime;
+
+  /// Last elapsed time used by the fling simulation
+  double _lastFlingElapsedSeconds = 0.0;
+
+  /// Direction for the current fling
+  Offset _flingDirection = Offset.zero;
 
   /// Creates a gesture handler
   GestureHandler({
     required this.controller,
     required this.enableRotation,
-    required this.constrainBounds,
     required this.enableDoubleTapZoom,
     required this.doubleTapZoomFactor,
-    required this.contentSize,
     required this.viewportKey,
     required this.enableCtrlScrollToScale,
-    required this.minScale,
-    required this.maxScale,
     this.enableFling = true,
     required this.enableZoom,
-    this.scrollMode = ScrollMode.both,
   });
 
   /// Handles the start of a scale gesture
   void handleScaleStart(ScaleStartDetails details) {
-    _lastFocalPoint = details.focalPoint;
-    _lastScale = controller.scale;
-    _lastRotation = controller.rotation;
+    _stopFling();
+    _hadScaleOrRotate = false;
+    _isScalingGesture = false;
+    _lastFocalPoint = details.localFocalPoint;
+    _lastScale = 1.0;
+    _lastRotation = 0.0;
+    _lastPointerCount = _effectivePointerCount(details.pointerCount);
+    if (_ignoreGesture) {
+      return;
+    }
+    controller.setScaling(false);
+    controller.setPanning(true);
   }
 
   /// Handles updates to a scale gesture
   void handleScaleUpdate(ScaleUpdateDetails details) {
-    // Get the render box to convert global position to local
-    final RenderBox? box =
-        viewportKey.currentContext?.findRenderObject() as RenderBox?;
-    if (box == null) return;
+    if (_ignoreGesture) {
+      return;
+    }
+    final Offset localFocalPoint = details.localFocalPoint;
+    final int pointerCount = _effectivePointerCount(details.pointerCount);
+    final bool isMultiTouch = pointerCount > 1;
 
-    // Convert focal point from global to local coordinates
-    final Offset localFocalPoint = box.globalToLocal(details.focalPoint);
-
-    // Handle scale updates
-    double? newScale;
-    if (enableZoom && details.scale != 1.0) {
-      newScale = _lastScale * details.scale;
-      newScale = newScale.clamp(minScale, maxScale);
+    if (pointerCount != _lastPointerCount) {
+      _lastPointerCount = pointerCount;
+      _lastScale = details.scale;
+      _lastRotation = details.rotation;
+      _lastFocalPoint = localFocalPoint;
+      if (pointerCount <= 1 && _isScalingGesture) {
+        _isScalingGesture = false;
+        controller.setScaling(false);
+        controller.setPanning(true);
+      }
     }
 
-    // Handle rotation updates
+    double? newScale;
+    if (enableZoom && isMultiTouch) {
+      final double scaleFactor =
+          _lastScale == 0.0 ? 1.0 : details.scale / _lastScale;
+      if (scaleFactor != 1.0) {
+        newScale = controller.scale * scaleFactor;
+      }
+    }
+
     double? newRotation;
-    if (enableRotation && details.pointerCount >= 2) {
-      newRotation = _lastRotation + details.rotation;
+    if (enableRotation && isMultiTouch) {
+      final double rotationDelta = details.rotation - _lastRotation;
+      if (rotationDelta != 0.0) {
+        newRotation = controller.rotation + rotationDelta;
+      }
+    }
+
+    final bool scaleChanged = newScale != null && newScale != controller.scale;
+    final bool rotationChanged =
+        newRotation != null && newRotation != controller.rotation;
+    final bool hasScaleOrRotate = scaleChanged || rotationChanged;
+
+    if (hasScaleOrRotate && !_isScalingGesture) {
+      _isScalingGesture = true;
+      controller.setScaling(true);
+      controller.setPanning(false);
+    } else if (!hasScaleOrRotate && _isScalingGesture) {
+      _isScalingGesture = false;
+      controller.setScaling(false);
+      controller.setPanning(true);
+    }
+
+    if (hasScaleOrRotate) {
+      _hadScaleOrRotate = true;
     }
 
     // For scale or rotation changes, we need to preserve the focal point position
-    if ((newScale != null && newScale != controller.scale) ||
-        (newRotation != null && newRotation != controller.rotation)) {
-      // First get the position of the focal point RELATIVE TO THE CONTENT ORIGIN
-      // before any transformations
-      final Offset focalPointBeforeTransform =
-          (localFocalPoint - controller.offset) / controller.scale;
-
-      // Calculate the new offset needed to keep the focal point visually fixed
-      Offset newOffset = controller.offset;
-
-      if (newScale != null && newScale != controller.scale) {
-        // The focal point should stay at the same visual location
-        // To achieve this, we need to adjust the offset based on the scale change
-        newOffset = localFocalPoint - (focalPointBeforeTransform * newScale);
-      }
-
-      if (newRotation != null &&
-          newRotation != controller.rotation &&
-          enableRotation) {
-        // For rotation, we need more complex calculations to keep the focal point fixed
-        final double rotationDelta = newRotation - controller.rotation;
-
-        // Get the vector from content origin to focal point (in content coordinates)
-        final Offset contentVector = focalPointBeforeTransform;
-
-        // Calculate where this point would be after rotation (still in content coordinates)
-        final double cosTheta = math.cos(rotationDelta);
-        final double sinTheta = math.sin(rotationDelta);
-        final Offset rotatedContentVector = Offset(
-          contentVector.dx * cosTheta - contentVector.dy * sinTheta,
-          contentVector.dx * sinTheta + contentVector.dy * cosTheta,
-        );
-
-        // Scale the rotated vector
-        final Offset scaledRotatedVector =
-            rotatedContentVector * (newScale ?? controller.scale);
-
-        // Calculate the new offset that keeps the focal point visually fixed
-        newOffset = localFocalPoint - scaledRotatedVector;
-      }
-
-      // Update the controller with all new values
-      controller.update(
-        newScale: newScale,
-        newRotation: newRotation,
-        newOffset: newOffset,
+    if (scaleChanged || rotationChanged) {
+      controller.applyInteraction(
+        InteractionRequest(
+          panDelta: localFocalPoint - _lastFocalPoint,
+          scale: newScale,
+          rotation: newRotation,
+          focalPoint: localFocalPoint,
+          includePanDeltaWhenScaling: true,
+        ),
       );
     } else {
       // For simple panning without scale/rotation changes
-      final Offset focalDiff = details.focalPoint - _lastFocalPoint;
-      final Offset constrainedDiff = _constrainPanByScrollMode(focalDiff);
-      controller.update(newOffset: controller.offset + constrainedDiff);
+      final Offset focalDiff = localFocalPoint - _lastFocalPoint;
+      controller.applyInteraction(InteractionRequest(panDelta: focalDiff));
     }
 
-    _applyConstraints();
-    _lastFocalPoint = details.focalPoint;
+    _lastScale = details.scale;
+    _lastRotation = details.rotation;
+    _lastFocalPoint = localFocalPoint;
   }
 
   /// Handles the end of a scale gesture
   void handleScaleEnd(ScaleEndDetails details) {
+    if (_ignoreGesture) {
+      _resetGestureTracking(clearPointers: true);
+      _ignoreGesture = false;
+      return;
+    }
+    controller.setScaling(false);
+    controller.setPanning(false);
+
     // Only process fling for single pointer panning (not for pinch/zoom)
-    if (!enableFling || details.pointerCount > 1) return;
+    if (!enableFling || _hadScaleOrRotate) {
+      _resetGestureTracking(clearPointers: true);
+      return;
+    }
 
     // Start a fling animation if the velocity is significant
     final double velocityMagnitude = details.velocity.pixelsPerSecond.distance;
     if (velocityMagnitude >= 200.0) {
       _startFling(details.velocity);
+    }
+
+    _resetGestureTracking(clearPointers: true);
+  }
+
+  void handlePointerDown(PointerDownEvent event) {
+    _activePointers.add(event.pointer);
+    if (_activePointers.length > 2) {
+      forceCancelGesture();
+    }
+  }
+
+  void handlePointerUp(PointerUpEvent event) {
+    _activePointers.remove(event.pointer);
+    _handlePointerRelease();
+  }
+
+  void handlePointerCancel(PointerCancelEvent event) {
+    _activePointers.remove(event.pointer);
+    _handlePointerRelease();
+  }
+
+  int _effectivePointerCount(int reportedCount) {
+    if (_activePointers.isEmpty) {
+      return reportedCount;
+    }
+    if (reportedCount < _activePointers.length) {
+      _activePointers.clear();
+      return reportedCount;
+    }
+    return _activePointers.length;
+  }
+
+  void _handlePointerRelease() {
+    if (_activePointers.isEmpty) {
+      controller.setScaling(false);
+      controller.setPanning(false);
+      _resetGestureTracking();
+      _ignoreGesture = false;
+    }
+  }
+
+  void _cancelActivePointers() {
+    for (final int pointer in _activePointers) {
+      GestureBinding.instance.cancelPointer(pointer);
+    }
+  }
+
+  void forceCancelGesture() {
+    _ignoreGesture = true;
+    _cancelActivePointers();
+    _resetGestureTracking(clearPointers: false);
+    controller.setScaling(false);
+    controller.setPanning(false);
+  }
+
+  void _resetGestureTracking({bool clearPointers = false}) {
+    _hadScaleOrRotate = false;
+    _isScalingGesture = false;
+    _lastPointerCount = 0;
+    _lastScale = 1.0;
+    _lastRotation = 0.0;
+    _lastFocalPoint = Offset.zero;
+    if (clearPointers) {
+      _activePointers.clear();
     }
   }
 
@@ -206,44 +290,15 @@ class GestureHandler {
     );
 
     // Get the fling direction as a normalized vector
-    final Offset direction =
+    _flingDirection =
         velocity.pixelsPerSecond.distance > 0
             ? velocity.pixelsPerSecond / velocity.pixelsPerSecond.distance
             : Offset.zero;
 
-    // Start time tracking
-    final startTime = DateTime.now().millisecondsSinceEpoch;
-
-    // Create a timer that updates the position 60 times per second
-    _flingTimer = Timer.periodic(const Duration(milliseconds: 16), (timer) {
-      final now = DateTime.now().millisecondsSinceEpoch;
-      final elapsedSeconds = (now - startTime) / 1000.0;
-
-      // Calculate the new position using the physics simulation
-      final double distance = _flingSimulation!.x(elapsedSeconds);
-      final double prevDistance = _flingSimulation!.x(elapsedSeconds - 0.016);
-      final double delta = distance - prevDistance;
-
-      // Skip tiny movements at the end of the animation
-      if (delta.abs() < 0.1 && _flingSimulation!.isDone(elapsedSeconds)) {
-        _stopFling();
-        return;
-      }
-
-      // Apply the movement in the direction of the fling
-      final Offset movement = direction * delta;
-      final Offset constrainedMovement = _constrainPanByScrollMode(movement);
-
-      // Update the controller position
-      controller.update(newOffset: controller.offset + constrainedMovement);
-
-      _applyConstraints();
-
-      // Stop the fling when the animation is done
-      if (_flingSimulation!.isDone(elapsedSeconds)) {
-        _stopFling();
-      }
-    });
+    _flingStartTime = null;
+    _lastFlingElapsedSeconds = 0.0;
+    _scheduleFlingFrame();
+    controller.setPanning(true);
   }
 
   /// Calculate appropriate friction based on velocity magnitude
@@ -261,9 +316,54 @@ class GestureHandler {
 
   /// Stops any active fling animation
   void _stopFling() {
-    _flingTimer?.cancel();
-    _flingTimer = null;
+    if (_flingFrameCallbackId != null) {
+      SchedulerBinding.instance.cancelFrameCallbackWithId(
+        _flingFrameCallbackId!,
+      );
+      _flingFrameCallbackId = null;
+    }
+    _flingStartTime = null;
+    _lastFlingElapsedSeconds = 0.0;
     _flingSimulation = null;
+    controller.setPanning(false);
+  }
+
+  void _scheduleFlingFrame() {
+    _flingFrameCallbackId = SchedulerBinding.instance.scheduleFrameCallback(
+      _handleFlingFrame,
+    );
+  }
+
+  void _handleFlingFrame(Duration timeStamp) {
+    if (_flingSimulation == null) return;
+
+    _flingStartTime ??= timeStamp;
+    final double elapsedSeconds =
+        (timeStamp - _flingStartTime!).inMicroseconds / 1e6;
+
+    // Calculate the new position using the physics simulation
+    final double distance = _flingSimulation!.x(elapsedSeconds);
+    final double prevDistance = _flingSimulation!.x(_lastFlingElapsedSeconds);
+    final double delta = distance - prevDistance;
+    _lastFlingElapsedSeconds = elapsedSeconds;
+
+    // Skip tiny movements at the end of the animation
+    if (delta.abs() < 0.1 && _flingSimulation!.isDone(elapsedSeconds)) {
+      _stopFling();
+      return;
+    }
+
+    // Apply the movement in the direction of the fling
+    final Offset movement = _flingDirection * delta;
+    // Update the controller position
+    controller.applyInteraction(InteractionRequest(panDelta: movement));
+
+    // Stop the fling when the animation is done
+    if (_flingSimulation!.isDone(elapsedSeconds)) {
+      _stopFling();
+    } else {
+      _scheduleFlingFrame();
+    }
   }
 
   /// Stores double tap position for zoom
@@ -273,11 +373,12 @@ class GestureHandler {
   }
 
   /// Handles double tap for zoom
-  void handleDoubleTap(BuildContext context) async {
+  void handleDoubleTap() async {
     if (!enableDoubleTapZoom || _doubleTapPosition == null) return;
 
     // Use viewportKey to get the RenderBox instead of Overlay
-    final RenderBox? box = context.findRenderObject() as RenderBox?;
+    final RenderBox? box =
+        viewportKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null) return;
 
     // Always use the local position where the user pressed as the zoom center
@@ -286,40 +387,46 @@ class GestureHandler {
     final double currentScale = controller.state.scale;
     final double targetScale =
         (currentScale < doubleTapZoomFactor) ? doubleTapZoomFactor : 1.0;
-
-    // Calculate the zoom factor for the new zoom method
-    final double factor;
-    if (targetScale > currentScale) {
-      // Zoom in: calculate positive factor
-      factor = (targetScale / currentScale) - 1.0;
-    } else {
-      // Zoom out: calculate negative factor
-      factor = -((currentScale / targetScale) - 1.0);
-    }
-
-    await controller.zoom(
-      factor: factor,
-      focalPoint: localFocal,
-      animate: true,
+    final targetState = controller.resolveInteraction(
+      InteractionRequest(scale: targetScale, focalPoint: localFocal),
     );
 
+    if (targetState == controller.state) {
+      _doubleTapPosition = null;
+      return;
+    }
+
+    controller.setScaling(true);
+    await controller.animateTo(
+      targetState: targetState,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+      animate: true,
+    );
+    controller.setScaling(false);
+
     _doubleTapPosition = null; // Reset after handling
-    _applyConstraints();
+    // Constraints and behaviors are applied via the controller pipeline.
   }
 
   /// Handles pointer scroll events
-  void handlePointerScroll(PointerScrollEvent event, BuildContext context) {
+  void handlePointerScroll(PointerScrollEvent event) {
     // Determine if scaling should occur based on ctrl key
     if (enableCtrlScrollToScale && isCtrlPressed) {
-      _handleCtrlScroll(event, context);
+      controller.setScaling(true);
+      _handleCtrlScroll(event);
+      controller.setScaling(false);
     } else {
+      controller.setPanning(true);
       _handleNormalScroll(event);
+      controller.setPanning(false);
     }
   }
 
   /// Handle Ctrl+Scroll for zooming
-  void _handleCtrlScroll(PointerScrollEvent event, BuildContext context) {
-    final RenderBox? box = context.findRenderObject() as RenderBox?;
+  void _handleCtrlScroll(PointerScrollEvent event) {
+    final RenderBox? box =
+        viewportKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null) return;
 
     final Offset localPosition = box.globalToLocal(event.position);
@@ -329,60 +436,16 @@ class GestureHandler {
     final double zoomFactor = event.scrollDelta.dy > 0 ? -0.1 : 0.1;
 
     final double currentScale = controller.scale;
-    // Compute the newScale clamped to min/max
-    final double newScale = (currentScale * (1 + zoomFactor)).clamp(
-      minScale,
-      maxScale,
+    final double targetScale = currentScale * (1 + zoomFactor);
+    controller.applyInteraction(
+      InteractionRequest(scale: targetScale, focalPoint: localPosition),
     );
-    // Convert clamped scale back to an effective factor to pass to controller.zoom
-    final double effectiveFactor = (newScale / currentScale) - 1.0;
-
-    // If no visible change, skip
-    if (effectiveFactor.abs() < 1e-4) return;
-
-    controller.zoom(
-      factor: effectiveFactor,
-      focalPoint: localPosition,
-      animate: false,
-    );
-
-    _applyConstraints();
   }
 
   /// Handle normal scroll for panning
   void _handleNormalScroll(PointerScrollEvent event) {
-    // Pan using scroll delta, constrained by scroll mode
-    final Offset constrainedDelta = _constrainPanByScrollMode(
-      -event.scrollDelta,
-    );
-    controller.pan(constrainedDelta, animate: false);
-
-    _applyConstraints();
-  }
-
-  /// Apply constraints if needed
-  void _applyConstraints() {
-    if (constrainBounds && contentSize != null) {
-      final RenderBox? box =
-          viewportKey.currentContext?.findRenderObject() as RenderBox?;
-      if (box != null) {
-        controller.constrainToBounds(contentSize!, box.size);
-      }
-    }
-  }
-
-  /// Constrains pan movement based on the scroll mode
-  Offset _constrainPanByScrollMode(Offset delta) {
-    switch (scrollMode) {
-      case ScrollMode.horizontal:
-        return Offset(delta.dx, 0);
-      case ScrollMode.vertical:
-        return Offset(0, delta.dy);
-      case ScrollMode.none:
-        return Offset.zero;
-      case ScrollMode.both:
-        return delta;
-    }
+    // Pan using scroll delta
+    controller.pan(-event.scrollDelta, animate: false);
   }
 
   /// Disposes the gesture handler and cleans up resources
